@@ -2,7 +2,10 @@ module github.com/ChewZ-life/ethclient
 
 go 1.22.1
 
-require github.com/ethereum/go-ethereum v1.14.9
+require (
+	github.com/ethereum/go-ethereum v1.14.9
+	github.com/go-redsync/redsync/v4 v4.13.0
+)
 
 require (
 	github.com/BurntSushi/toml v1.4.0 // indirect
@@ -20,6 +23,8 @@ require (
 	github.com/ethereum/c-kzg-4844 v1.0.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/holiman/uint256 v1.3.1 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect

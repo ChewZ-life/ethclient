@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ChewZ-life/ethclient/nonce"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -14,7 +15,7 @@ import (
 type Client struct {
 	*ethclient.Client
 	rpcClient *rpc.Client
-	NonceManager
+	nonce.Manager
 }
 
 func Dial(rawurl string) (*Client, error) {
@@ -25,15 +26,15 @@ func Dial(rawurl string) (*Client, error) {
 
 	c := ethclient.NewClient(rpcClient)
 
-	nm, err := GetSimpleNonceManager(c)
+	nm, err := nonce.NewSimpleManager(c, nonce.NewMemoryStorage())
 	if err != nil {
 		return nil, err
 	}
 
 	return &Client{
-		Client:       c,
-		rpcClient:    rpcClient,
-		NonceManager: nm,
+		Client:    c,
+		rpcClient: rpcClient,
+		Manager:   nm,
 	}, nil
 }
 
@@ -46,12 +47,16 @@ func (c *Client) RawClient() *ethclient.Client {
 	return c.Client
 }
 
+func (c *Client) SetNonceManager(nm nonce.Manager) {
+	c.Manager = nm
+}
+
 func (c *Client) PendingNonceAt(ctx context.Context, account common.Address) (uint64, error) {
-	return c.NonceManager.PendingNonceAt(ctx, account)
+	return c.Manager.PendingNonceAt(ctx, account)
 }
 
 func (c *Client) SuggestGasPrice(ctx context.Context) (gasPrice *big.Int, err error) {
-	return c.NonceManager.SuggestGasPrice(ctx)
+	return c.Manager.SuggestGasPrice(ctx)
 }
 
 func (c *Client) WaitTxReceipt(txHash common.Hash, confirmations uint64, timeout time.Duration) (*types.Receipt, bool) {
