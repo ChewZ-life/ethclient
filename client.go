@@ -7,8 +7,11 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ChewZ-life/ethclient/common/consts"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/ChewZ-life/ethclient/message"
 	"github.com/ChewZ-life/ethclient/nonce"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -23,6 +26,9 @@ type Client struct {
 	rpcClient *rpc.Client
 	nonce.Manager
 	signers []bind.SignerFn // Method to use for signing the transaction (mandatory)
+
+	reqChannel  chan message.Request
+	respChannel chan message.Response
 }
 
 func Dial(rawurl string) (*Client, error) {
@@ -38,14 +44,36 @@ func Dial(rawurl string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{
-		Client:    c,
-		rpcClient: rpcClient,
-		Manager:   nm,
-	}, nil
+	cli, err := NewClient(rpcClient, nm)
+	if err != nil {
+		return nil, err
+	}
+
+	return cli, nil
+}
+
+func NewClient(
+	c *rpc.Client,
+	nonceManager nonce.Manager,
+) (*Client, error) {
+	ethc := ethclient.NewClient(c)
+
+	cli := &Client{
+		Client:      ethc,
+		rpcClient:   c,
+		reqChannel:  make(chan message.Request, consts.DefaultMsgBuffer),
+		respChannel: make(chan message.Response, consts.DefaultMsgBuffer),
+		Manager:     nonceManager,
+	}
+
+	go cli.sendMsgTask(context.Background())
+
+	return cli, nil
 }
 
 func (c *Client) Close() {
+	close(c.reqChannel)
+
 	c.Client.Close()
 }
 
@@ -110,6 +138,130 @@ func (c *Client) RegisterPrivateKey(ctx context.Context, key *ecdsa.PrivateKey) 
 	c.RegisterSigner(signerFn)
 
 	return nil
+}
+
+func (c *Client) sendMsgTask(ctx context.Context) {
+	// Pipepline: reqChannel => scheduler => broadcaster
+
+	go c.schedule(c.respChannel)
+}
+
+func (c *Client) ScheduleMsg(req message.Request) {
+	c.reqChannel <- req
+}
+
+func (c *Client) ScheduleMsgResponse() <-chan message.Response {
+	return c.respChannel
+}
+
+func (c *Client) schedule(msgResChan chan<- message.Response) {
+	for req := range c.reqChannel {
+		log.Debug("start scheduling msg...", "msgId", req.Id())
+		if req.Id() == common.BytesToHash([]byte{}) {
+			msgResChan <- message.Response{
+				Id:  req.Id(),
+				Err: fmt.Errorf("no msgId provided"),
+			}
+			continue
+		}
+
+		log.Info("broadcast msg", "msg", req)
+		tx, err := c.sendMsg(context.Background(), req)
+		msgResChan <- message.Response{Id: req.Id(), Tx: tx, Err: err}
+	}
+
+	log.Debug("close scheduler...")
+	close(c.respChannel)
+}
+
+func (c *Client) sendMsg(ctx context.Context, msg message.Request) (signedTx *types.Transaction, err error) {
+	log.Debug("broadcast msg", "msg", msg)
+	tx, err := c.NewTransaction(ctx, msg)
+	if err != nil {
+		return nil, fmt.Errorf("NewTransaction err: %v", err)
+	}
+
+	// chainID, err := c.Client.ChainID(ctx)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("get Chain ID err: %v", err)
+	// }
+
+	// signedTx, err = types.SignTx(tx, types.NewEIP2930Signer(chainID), msg.PrivateKey)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("SignTx err: %v", err)
+	// }
+
+	signerFn := c.GetSigner()
+	signedTx, err = signerFn(msg.From, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.Client.SendTransaction(ctx, signedTx)
+	if err != nil {
+		return nil, fmt.Errorf("SendTransaction err: %v", err)
+	}
+
+	resp := message.Response{
+		Id:  msg.Id(),
+		Tx:  signedTx,
+		Err: err,
+	}
+
+	c.respChannel <- resp
+
+	log.Debug("Send Message successfully", "txHash", signedTx.Hash().Hex(), "from", msg.From.Hex(),
+		"to", msg.To.Hex(), "value", msg.Value)
+
+	return signedTx, nil
+}
+
+func (c *Client) NewTransaction(ctx context.Context, msg message.Request) (*types.Transaction, error) {
+	if msg.To == nil {
+		to := common.HexToAddress("0x0")
+		msg.To = &to
+	}
+
+	if msg.Gas == 0 {
+		ethMesg := ethereum.CallMsg{
+			From:       msg.From,
+			To:         msg.To,
+			Gas:        msg.Gas,
+			GasPrice:   msg.GasPrice,
+			Value:      msg.Value,
+			Data:       msg.Data,
+			AccessList: msg.AccessList,
+		}
+
+		gas, err := c.EstimateGas(ctx, ethMesg)
+		if err != nil {
+			if msg.GasOnEstimationFailed == nil {
+				return nil, err
+			}
+
+			msg.Gas = *msg.GasOnEstimationFailed
+		} else {
+			// Multiplier 1.5
+			msg.Gas = gas * 1500 / 1000
+		}
+	}
+
+	if msg.GasPrice == nil || msg.GasPrice.Uint64() == 0 {
+		var err error
+		msg.GasPrice, err = c.SuggestGasPrice(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	nonce, err := c.PendingNonceAt(ctx, msg.From)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := types.NewTransaction(nonce, *msg.To, msg.Value, msg.Gas, msg.GasPrice, msg.Data)
+
+	return tx, nil
 }
 
 func (c *Client) PendingNonceAt(ctx context.Context, account common.Address) (uint64, error) {
