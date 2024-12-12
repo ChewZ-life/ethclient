@@ -274,7 +274,9 @@ func (c *Client) SuggestGasPrice(ctx context.Context) (gasPrice *big.Int, err er
 
 func (c *Client) WaitTxReceipt(txHash common.Hash, confirmations uint64, timeout time.Duration) (*types.Receipt, bool) {
 	startTime := time.Now()
-	for {
+	retryCount := 0
+	for ; ; retryCount++ {
+		log.Debug("wait tx receipt", "txHash", txHash.Hex(), "retryCount", retryCount)
 		currTime := time.Now()
 		elapsedTime := currTime.Sub(startTime)
 		if elapsedTime >= timeout {
@@ -283,16 +285,21 @@ func (c *Client) WaitTxReceipt(txHash common.Hash, confirmations uint64, timeout
 
 		receipt, err := c.Client.TransactionReceipt(context.Background(), txHash)
 		if err != nil {
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		block, err := c.Client.BlockNumber(context.Background())
+
 		if err != nil {
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		if block >= receipt.BlockNumber.Uint64()+confirmations {
 			return receipt, true
 		}
+
+		time.Sleep(1 * time.Second)
 	}
 }
